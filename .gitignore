@@ -127,3 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Excluding airbnb-property-listings folder
+airbnb-property-listings/
+listing.csv/
+test.py/
