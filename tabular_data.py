@@ -99,6 +99,6 @@ def clean_tabular_data(dataset: pd.core.frame.DataFrame) -> pd.core.frame.DataFr
     return dataset
 
 if __name__ == "__main__":
-    dataset = pd.read_csv("listing.csv")
+    dataset = pd.read_csv("airbnb-property-listings/tabular_data/listing.csv")
     cleaned_dataset = clean_tabular_data(dataset)
     cleaned_dataset.to_csv("clean_tabular_data.csv", index=None)
