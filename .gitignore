@@ -132,3 +132,4 @@ dmypy.json
 airbnb-property-listings/
 listing.csv/
 test.py/
+data/
