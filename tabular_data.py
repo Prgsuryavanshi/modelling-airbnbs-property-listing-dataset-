@@ -84,6 +84,7 @@ def clean_tabular_data(dataset: pd.core.frame.DataFrame) -> pd.core.frame.DataFr
         -> Call remove_rows_with_missing_ratings(): remove rows having null values in rating columns
         -> Call combine_description_strings(): remove empty spaces and combine the string in description column
         -> Call set_default_feature_values(): set the null values to "1" in the feature columns
+        -> Drop 'Unnamed: 19' column from dataset which contains nan values
 
     Args: 
         dataset (pd.core.frame.DataFrame): raw dataframe
@@ -95,10 +96,32 @@ def clean_tabular_data(dataset: pd.core.frame.DataFrame) -> pd.core.frame.DataFr
     dataset = remove_rows_with_missing_ratings(dataset)
     dataset = combine_description_strings(dataset)
     dataset = set_default_feature_values(dataset)
+    # drop column 'Unnamed: 19' from dataset which contains only null values
+    dataset.drop('Unnamed: 19', axis=1, inplace=True)
 
     return dataset
 
+def load_airbnb(dataset: pd.core.frame.DataFrame, label: str=None) -> tuple:
+    """This function is used to: 
+        -> drop label which is passed as argument.
+        -> select numeric data from the dataset
+        -> returns the features and labels of the dataset in a tuple(features, labels)
+
+    Args:
+        dataset (pd.core.frame.DataFrame): cleaned dataset
+        label (str, optional): name of the column as a string as a keyword argument "label" Defaults to None.
+
+    Returns:
+        dataset (pd.core.frame.DataFrame): numeric dataset
+    """
+
+    features = dataset.drop(label, axis=1)
+    labels = dataset[label]
+    features = features.select_dtypes(include='number')
+    
+    return (features, labels)
+
 if __name__ == "__main__":
-    dataset = pd.read_csv("airbnb-property-listings/tabular_data/listing.csv")
+    dataset = pd.read_csv("data/tabular_data/listing.csv")
     cleaned_dataset = clean_tabular_data(dataset)
     cleaned_dataset.to_csv("clean_tabular_data.csv", index=None)

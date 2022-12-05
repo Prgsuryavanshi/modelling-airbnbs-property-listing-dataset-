@@ -5,4 +5,3 @@ os
 glob
 imutils
 pillow
-image
