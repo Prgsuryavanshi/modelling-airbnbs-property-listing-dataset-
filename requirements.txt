@@ -5,3 +5,5 @@ os
 glob
 imutils
 pillow
+scikit-learn
+SGDRegressor
