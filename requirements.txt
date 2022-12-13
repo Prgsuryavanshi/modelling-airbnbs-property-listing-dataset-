@@ -1,9 +1,12 @@
+os
+abc
+json
+glob
 python == 3.10
 pandas
 numpy
-os
-glob
+joblib
 imutils
 pillow
+itertools
 scikit-learn
-SGDRegressor
