@@ -7,13 +7,13 @@ import warnings
 import pandas as pd
 from pathlib import Path
 from sklearn.linear_model import SGDRegressor
-from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
 
 from tabular_data import load_airbnb
@@ -137,11 +137,11 @@ def tune_regression_model_hyperparameters(model_class: abc.ABCMeta, hyper_params
     # train model
     trained_model = reg_model.fit(xtrain, ytrain)
     # store score in model_score
-    model_score = metrics_trained_model(trained_model)
+    model_score = metrics_trained_model_regressor(trained_model)
 
     return trained_model, model_score, best_model_param
 
-def metrics_trained_model(trained_model: abc.ABCMeta) -> dict:
+def metrics_trained_model_regressor(trained_model: abc.ABCMeta) -> dict:
     """This function caculates the performance metrics of the trained model(trained and tuned using GridSearchCV) 
        and append it to the model_score dictionary.
 

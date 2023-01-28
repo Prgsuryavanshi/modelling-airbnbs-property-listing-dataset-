@@ -76,6 +76,9 @@ def set_default_feature_values(dataset: pd.core.frame.DataFrame) -> pd.core.fram
     rows = ['guests', 'beds', 'bathrooms', 'bedrooms']
     for row in rows:        
         dataset[row].fillna("1", inplace=True)
+    dataset['guests'] = dataset['guests'].apply(lambda x: 1 if len(x) > 4 else int(x))
+    dataset['bedrooms'] = dataset['bedrooms'].apply(lambda x: 1 if len(x) > 4 else int(x))
+    
        
     return dataset
 
