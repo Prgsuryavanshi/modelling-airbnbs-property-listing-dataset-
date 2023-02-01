@@ -133,3 +133,19 @@ airbnb-property-listings/
 listing.csv/
 test.py/
 data/
+
+
+
+
+
+
+
+# excluding files
+python_task_files
+__pycache__
+ipynb_checkpoints
+data
+*.DS_Store
+json
+models
+runs

@@ -1,11 +1,14 @@
 import os
 import abc
 import json
+import torch
 import joblib
 import itertools
 import warnings
+import numpy as np
 import pandas as pd
 from pathlib import Path
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.linear_model import SGDRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.tree import DecisionTreeClassifier
@@ -16,175 +19,218 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
 
+warnings.filterwarnings('ignore')
+
 from tabular_data import load_airbnb
 
-warnings.filterwarnings('ignore')
-global grid_result
-global best_model_score
-global best_model_param
-
-dataset = pd.read_csv("clean_tabular_data.csv")
-features,labels = load_airbnb(dataset, label='Price_Night', numeric=True)
-
-# assign the features to x and labels to y
-x = features
-y = labels
 # split the dataset into train & test data using train_test split()
-xtrain, xtest, ytrain, ytest = train_test_split(x, y, test_size=0.2, random_state=42)
-
-# Milestone-4, Task-3
-# define hyperparameter values
-loss = ['squared_error', 'huber', 'epsilon_insensitive', 'squared_epsilon_insensitive']
-penalty = ['l1', 'l2', 'elasticnet', None]
-alpha = [0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]
-learning_rate = ['constant', 'optimal', 'invscaling', 'adaptive']
-epsilon = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-eta0 = [1, 10, 100]
-max_iter = [0, 0.5, 1, 10, 100, 1000, 5000, 10000]
-
-hyper_params = dict(loss=loss, penalty=penalty, alpha=alpha, learning_rate=learning_rate, epsilon=epsilon, eta0=eta0)
-
-def custom_tune_regression_model_hyperparameters(model_class: abc.ABCMeta, xtrain: pd.core.frame.DataFrame, \
-    xtest: pd.core.frame.DataFrame, ytrain: pd.core.series.Series, ytest: pd.core.series.Series, \
-        hyper_params: dict) -> tuple[str, dict, dict]:
-    """This function is used to: 
-        -> perform custom grid search by hyperparameters tuning.
-        -> calculate MSE, RMSE and MAE of train and test data and append it to the model_score(performance metrics).
+def get_split_data(features: pd.core.frame.DataFrame, label: pd.core.series.Series,task_folder: str) -> tuple[pd.core.frame.DataFrame, pd.core.series.Series, pd.core.frame.DataFrame, pd.core.series.Series, pd.core.frame.DataFrame, pd.core.series.Series]:
+    """This function is used to:
+       -> get numeric data from dataset and Price_Night/Category as label based on task folder.
+       -> normalize the dataset and split it into the train, test and validation dataset.
 
     Args:
-        model_class (abc.ABCMeta): regressor.
-        xtrain (pd.core.frame.DataFrame): training set.
-        xtest (pd.core.frame.DataFrame): test set.
-        ytrain (pd.core.series.Series): training target set.
-        ytest (pd.core.series.Series): test target set.
-        hyper_params (dict): dictionary of hyperparameters values to get best optimal value.
+        features (pd.core.frame.DataFrame): training dataset
+        label (pd.core.series.Series): target data
+        task_folder (str): regression/classification task
+
+    Returns:
+        x_train (pd.core.frame.DataFrame): independent training dataset.
+        y_train (pd.core.frame.DataFrame): dependent training dataset.
+        x_val (pd.core.frame.DataFrame): independent validation dataset.
+        y_val (pd.core.frame.DataFrame): dependent validation dataset.
+        x_test (pd.core.frame.DataFrame): independent testing dataset.
+        y_test (pd.core.frame.DataFrame): dependent testing dataset.
+    """
+    
+    if task_folder=='models/classification':
+        # split the scaled_dataset into train+val and test data
+        # due to class imbalance, stratify option is used in train_test_split() to have equal 
+        # distribution of all output classes
+        x_trainval, x_test, y_trainval, y_test = train_test_split(features, label, stratify=label, test_size=0.10)
+
+        # split the trainval into train and val data
+        x_train, x_val, y_train, y_val = train_test_split(x_trainval, y_trainval, stratify=y_trainval, test_size=0.15) 
+    else:
+        # split the scaled_dataset into train+val and test data
+        x_trainval, x_test, y_trainval, y_test = train_test_split(features, label, test_size=0.10)
+
+        # split the trainval into train and val data
+        x_train, x_val, y_train, y_val = train_test_split(x_trainval, y_trainval, test_size=0.15)
+        
+    # normalize x_train, x_test & x_val
+    scaler = MinMaxScaler()
+    x_train = scaler.fit_transform(x_train)
+    x_test = scaler.transform(x_test)
+    x_val = scaler.transform(x_val)
+    # numpy -> dataframe
+    x_train = pd.DataFrame(x_train, columns = features.columns)
+    x_val = pd.DataFrame(x_val, columns = features.columns)
+    x_test = pd.DataFrame(x_test, columns = features.columns)
+    
+    return x_train, y_train, x_val, y_val, x_test, y_test
+
+def custom_tune_regression_model_hyperparameters(model_class: abc.ABCMeta, split_data: tuple, hyper_params: dict) -> tuple[str, dict, dict]:
+    """This function is used to: 
+        -> perform custom grid search by hyperparameters tuning.
+        -> calculate R2, MSE, RMSE and MAE of train, test and val data, and 
+        -> find best model based on validation rmse score.
+
+    Args:
+        model_class (abc.ABCMeta): model class.
+        split_data (tuple): training, validation, and test sets.
+        hyper_params (dict): dictionary of hyperparameters values to get best model based on 'validation_rmse'.
     
     Returns:
         best_model (str): return the model with best score.
         best_hyperparameter_values (dict): return a dictionary of its best hyperparameter values.
-        performance_metrics (dict): return a dictionary of its best performance metrics.
-    """ 
-    model_score = {"R2_test":[], "R2_train":[], "Parameters":[], "validation_RMSE":[], "train_RMSE":[], "train_MSE":[], "test_MSE":[], "train_MAE":[], "test_MAE":[], "Model_Class":[]};
+        model_score (dict): return a dictionary of its best performance metrics.
+    """
+    # unpack split_data
+    x_train, y_train, x_val, y_val, x_test, y_test = split_data
+    # variable to store best val rmse for comparison
+    best_val_rmse = float('inf')
+    # empty list for performance metrics
+    model_score = {"test_r2":[], "train_r2":[], "val_r2":[],"test_RMSE":[], "train_RMSE":[], "validation_RMSE":[], "test_MSE":[], "train_MSE":[],  "val_MSE":[], "test_MAE":[], "train_MAE":[], "val_MAE":[], "Model_Class":[]}
+    # unpack key value pairs from hyper_params dict
     keys, values = zip(*hyper_params.items())
     permutations_hyper_params = [dict(zip(keys, v)) for v in itertools.product(*values)]
-    
+    # train model with hyper params
     for params in permutations_hyper_params:
         model = model_class(**params)
-        model.fit(xtrain, ytrain)
+        model.fit(x_train, y_train)
         
-        # predict target using xtest data
-        ypred_test = model.predict(xtest)
+        # predict target using x_test data
+        ypred_test = model.predict(x_test)
 
-        # predict target using xtrain data
-        ypred_train = model.predict(xtrain)
+        # predict target using x_train data
+        ypred_train = model.predict(x_train)
         
-        mae_train = mean_absolute_error(ytrain,ypred_train)
-        mae_test = mean_absolute_error(ytest,ypred_test)
-        
-        mse_train = mean_squared_error(ytrain,ypred_train)
-        mse_test = mean_squared_error(ytest,ypred_test)
-        
-        rmse_train = mean_squared_error(ytrain,ypred_train,squared=False)
-        rmse_test = mean_squared_error(ytest,ypred_test,squared=False)
-        
-        model_score["Model_Class"].append(str(model.__class__.__name__))
-        
-        model_score["R2_test"].append(r2_score(ytest, ypred_test))
-        model_score["R2_train"].append(r2_score(ytrain, ypred_train))
-        
-        model_score["Parameters"].append(params)
-        
-        model_score["train_MAE"].append(mae_train)
-        model_score["test_MAE"].append(mae_test)
-        
-        model_score["train_MSE"].append(mse_train)
-        model_score["test_MSE"].append(mse_test)
-        
-        model_score["validation_RMSE"].append(rmse_test)
-        model_score["train_RMSE"].append(rmse_train)
+        # predict target using x_val data
+        ypred_val = model.predict(x_val)
+        # get performance metrics based on best val_rmse
+        val_rmse = mean_squared_error(y_val,ypred_val,squared=False)
+        if val_rmse < best_val_rmse:
+            # get best model
+            best_model = model
+            # if new val_rmse is less than best_val_rmse 
+            best_val_rmse = val_rmse
+            # get model class name
+            model_score["Model_Class"] = str(model.__class__.__name__)
+            # get best hyper param
+            best_hyperparameter_values = params
+            # get model score
+            model_score["test_r2"] = r2_score(y_test, ypred_test)
+            model_score["train_r2"] = r2_score(y_train, ypred_train)
+            model_score["val_r2"] = r2_score(y_val, ypred_val)
+            model_score["train_MAE"] = mean_absolute_error(y_train,ypred_train)
+            model_score["test_MAE"] = mean_absolute_error(y_test,ypred_test)
+            model_score["val_MAE"] = mean_absolute_error(y_val,ypred_val)
+            model_score["train_MSE"]= mean_squared_error(y_train,ypred_train)
+            model_score["test_MSE"]= mean_squared_error(y_test,ypred_test)
+            model_score["val_MSE"]= mean_squared_error(y_val,ypred_val)
+            model_score["validation_RMSE"] = val_rmse
+            model_score["train_RMSE"] = mean_squared_error(y_train,ypred_train,squared=False)
+            model_score["test_RMSE"] = mean_squared_error(y_test,ypred_test,squared=False)
     
-    model_score_dataframe = pd.DataFrame(model_score)
-    best_model_param = model_score_dataframe[model_score_dataframe.validation_RMSE == model_score_dataframe.validation_RMSE.min()]
-    best_model = best_model_param.Model_Class.values[0]
-    best_hyperparameter_values = best_model_param.Parameters.values[0]
-    performance_metrics = best_model_param.drop(['Parameters', 'Model_Class'], axis=1).to_dict('list')
-    
-    return best_model, best_hyperparameter_values, performance_metrics
+    return best_model, best_hyperparameter_values, model_score
 
 # Milestone-4, Task-4 & 6
-def tune_regression_model_hyperparameters(model_class: abc.ABCMeta, hyper_params: dict, xtrain: pd.core.frame.DataFrame, ytrain: pd.core.series.Series, validation: int=5) -> tuple[abc.ABCMeta, dict, dict]:
-    """This function uses SKLearn's GridSearchCV to perform 
-        a grid search over a reasonable range of hyperparameter values.
-
+def tune_regression_model_hyperparameters(model_class: abc.ABCMeta, hyper_params: dict, split_data: tuple, validation: int=5) -> tuple[abc.ABCMeta, dict, dict]:
+    """This function is used to:
+        -> to perform a grid search using SKLearn's GridSearchCV over a reasonable range of hyperparameter values,
+        -> train regression model using best hyper params obtained from GridSearchCV() and
+        -> get best model performance metrics
+        
     Args:
         model_class (abc.ABCMeta): the model class to be optimized by cross-validated grid-search over a parameter grid.
         hyper_params (dict): a dictionary of hyperparameter names mapping to a list of values to be tried.
-        xtrain (pd.core.frame.DataFrame): training set.
-        ytrain (pd.core.series.Series): training target set.
+        split_data (tuple): training, validation, and test sets.
         validation (int, optional): the cross-validation splitting strategy. Defaults to 5.
 
     Returns:
-        trained_model (abc.ABCMeta): the model class trained and tuned using GridSearchCV.
+        trained_model (abc.ABCMeta): the model class trained and tuned using GridSearchCV().
         best_model_param (dict): a dictionary of best hyperparameters on which the model is trained.
         model_score (dict): a dictionary of performance metrics of the model once it is trained and tuned.
     """
-    grid = GridSearchCV(estimator=model_class, param_grid=hyper_params, cv=validation, scoring='r2', verbose=1, n_jobs=-1)  
-    grid_result = grid.fit(xtrain, ytrain)
+    # unpack split_data
+    x_train, y_train, x_val, y_val, x_test, y_test = split_data 
+    
+    #find best parameters using GridSearchCV()
+    grid = GridSearchCV(estimator=model_class, param_grid=hyper_params, cv=validation, scoring='neg_root_mean_squared_error', verbose=1, n_jobs=-1)  
+    grid_result = grid.fit(x_train, y_train)
     best_model_param = grid_result.best_params_
-
+    
+    # get model class and create an instance of model_class
     reg_model = model_class.__class__
     reg_model = reg_model(**best_model_param)
     # train model
-    trained_model = reg_model.fit(xtrain, ytrain)
+    trained_model = reg_model.fit(x_train, y_train)
     # store score in model_score
-    model_score = metrics_trained_model_regressor(trained_model)
+    model_score = regression_trained_model_metrics(trained_model, split_data)
 
     return trained_model, model_score, best_model_param
 
-def metrics_trained_model_regressor(trained_model: abc.ABCMeta) -> dict:
+def regression_trained_model_metrics(trained_model: abc.ABCMeta, split_data: tuple) -> dict:
     """This function caculates the performance metrics of the trained model(trained and tuned using GridSearchCV) 
        and append it to the model_score dictionary.
 
     Args:
         trained_model (abc.ABCMeta): the model class trained and tuned using GridSearchCV.
+        split_data (tuple): training, validation, and test sets.
 
     Returns:
         model_score (dict): a dictionary of performance metrics.
     """
-    model_score = {"R2_test":[], "R2_train":[], "validation_RMSE":[], "train_RMSE":[], "train_MSE":[], "test_MSE":[], "train_MAE":[], "test_MAE":[]};
-
-    ypred_test = trained_model.predict(xtest)
-
-    # predict target using xtrain data
-    ypred_train = trained_model.predict(xtrain)
+    # unpack split_data
+    x_train, y_train, x_val, y_val, x_test, y_test = split_data
+    # empty list to store regression model performance metrics
+    model_score = {"test_r2":[],
+                   "train_r2":[],
+                   "val_r2":[],
+                   "test_RMSE":[],
+                   "train_RMSE":[],
+                   "validation_RMSE":[],
+                   "test_MSE":[],
+                   "train_MSE":[],
+                   "val_MSE":[],
+                   "test_MAE":[],
+                   "train_MAE":[],
+                   "val_MAE":[],
+                   "Model_Class":[]}
     
-    mae_train = mean_absolute_error(ytrain,ypred_train)
-    mae_test = mean_absolute_error(ytest,ypred_test)
+    # predict target using x_test data
+    ypred_test = trained_model.predict(x_test)
 
-    mse_train = mean_squared_error(ytrain,ypred_train)
-    mse_test = mean_squared_error(ytest,ypred_test)
+    # predict target using x_train data
+    ypred_train = trained_model.predict(x_train)
 
-    rmse_train = mean_squared_error(ytrain,ypred_train,squared=False)
-    rmse_test = mean_squared_error(ytest,ypred_test,squared=False)
-
-    model_score["R2_test"].append(r2_score(ytest, ypred_test))
-    model_score["R2_train"].append(r2_score(ytrain, ypred_train))
-
-    model_score["train_MAE"].append(mae_train)
-    model_score["test_MAE"].append(mae_test)
-
-    model_score["train_MSE"].append(mse_train)
-    model_score["test_MSE"].append(mse_test)
-
-    model_score["validation_RMSE"].append(rmse_test)
-    model_score["train_RMSE"].append(rmse_train)
+    # predict target using x_val data
+    ypred_val = trained_model.predict(x_val)
+    
+    # save model_class name
+    model_score["Model_Class"].append(str(trained_model.__class__.__name__))
+    
+    # append performance metrics to model_score
+    model_score["test_r2"].append(r2_score(y_test, ypred_test))
+    model_score["train_r2"].append(r2_score(y_train, ypred_train))
+    model_score["val_r2"].append(r2_score(y_val, ypred_val))
+    model_score["train_MAE"].append(mean_absolute_error(y_train,ypred_train))
+    model_score["test_MAE"].append(mean_absolute_error(y_test,ypred_test))
+    model_score["val_MAE"].append(mean_absolute_error(y_val,ypred_val))
+    model_score["train_MSE"].append(mean_squared_error(y_train,ypred_train))
+    model_score["test_MSE"].append(mean_squared_error(y_test,ypred_test))
+    model_score["val_MSE"].append(mean_squared_error(y_val,ypred_val))
+    model_score["validation_RMSE"].append(mean_squared_error(y_val,ypred_val,squared=False))
+    model_score["train_RMSE"].append(mean_squared_error(y_train,ypred_train,squared=False))
+    model_score["test_RMSE"].append(mean_squared_error(y_test,ypred_test,squared=False))
     
     return model_score
 
 # Milestone-4, Task-5
 def save_model(trained_model: abc.ABCMeta, best_model_param: dict, model_score: dict, folder: str):
     """This function saves:
-       -> the model in a file called model.joblib.
+       -> the model in a file called model.joblib (SKLearn regression & classification model) and model.pt(PyTorch)
        -> its hyperparameters in a file called hyperparameters.json.
        -> its performance metrics in a file called metrics.json once it's trained and tuned.
        The function take in the name of a folder where these files are saved as a keyword argument "folder".
@@ -195,56 +241,93 @@ def save_model(trained_model: abc.ABCMeta, best_model_param: dict, model_score: 
         model_score (dict): a dictinary of performance metrics of the model once it is trained and tuned.
         folder (str): the name of a folder where these files are saved.
     """
-    with open(os.path.join(folder, "model.joblib"), "wb") as out_joblib:
-        joblib.dump(trained_model, out_joblib)
+    # save pytorch model
+    if isinstance(trained_model, torch.nn.Module):
+        with open(os.path.join(folder, "model.pt"), "wb") as out_pt:
+            torch.save(trained_model.state_dict(), out_pt )
+    
+    # save regression/classification model
+    else:
+        with open(os.path.join(folder, "model.joblib"), "wb") as out_joblib:
+            joblib.dump(trained_model, out_joblib)
+    
+    # save model hyperparameters
     with open(os.path.join(folder, "hyperparameters.json"), "w") as param_json:
         json.dump(best_model_param, param_json, indent=4)
+    
+    # save model metrics
     with open(os.path.join(folder, "metrics.json"), "w") as metrics_json:
         json.dump(model_score, metrics_json, indent=4)
 
 # Milestone-4, Task-6
-
 # Milestone-5, Task-5
-def metrics_trained_model_classifier(trained_model: abc.ABCMeta) -> dict:
+def classification_trained_model_metrics(trained_model: abc.ABCMeta, split_data: tuple) -> dict:
     """This function caculates the performance metrics of the trained classifier model
     (trained and tuned using GridSearchCV) and append it to the model_score dictionary.
 
     Args:
         trained_model (abc.ABCMeta): the model class trained and tuned using GridSearchCV.
+        split_data (tuple): training, validation, and test sets.
 
     Returns:
         model_score (dict): a dictionary of performance metrics.
     """
-    model_score = {"validation_accuracy":[], "f1_score":[], "precision_score":[], "recall_score":[], "train_accuracy":[]}
-    ypred_test = trained_model.predict(xtest)
-    # predict target using xtrain data
-    ypred_train = trained_model.predict(xtrain)
-    # calculate f1 score with test data
-    test_f1_score = f1_score(ytest, ypred_test, average='micro')
-    # calculate precision score with test data
-    test_precision_score = precision_score(ytest, ypred_test, average='macro')
-    # calculate recall score with test data
-    test_recall_score = recall_score(ytest, ypred_test, average='micro')
-    test_accuracy = accuracy_score(ytest, ypred_test, normalize=True)
-    train_accuracy_score = accuracy_score(ytest, ypred_test, normalize=True)
-    model_score["validation_accuracy"].append(test_accuracy)
-    model_score["f1_score"].append(test_f1_score)
-    model_score["precision_score"].append(test_precision_score)
-    model_score["recall_score"].append(test_recall_score)
-    model_score["train_accuracy"].append(train_accuracy_score)
+    # unpack split_data
+    x_train, y_train, x_val, y_val, x_test, y_test = split_data
+    
+    # empty list to store classification model performance metrics
+    model_score = {"accuracy":{}, "f1_score":{}, "precision":{}, "recall":{}}
+
+    # predict target using x_test data
+    ypred_test = trained_model.predict(x_test)
+
+    # predict target using x_train data
+    ypred_train = trained_model.predict(x_train)
+
+    # predict target using x_val data
+    ypred_val = trained_model.predict(x_val)
+    
+    # calculate f1 score 
+    test_f1 = f1_score(y_test, ypred_test, average='weighted')
+    train_f1 = f1_score(y_train, ypred_train, average='weighted')
+    val_f1 = f1_score(y_val, ypred_val, average='weighted')
+    
+    # calculate precision score 
+    test_precision = precision_score(y_test, ypred_test, average='weighted')
+    train_precision = precision_score(y_train, ypred_train, average='weighted')
+    val_precision = precision_score(y_val, ypred_val, average='weighted')
+    
+    # calculate recall score 
+    test_recall = recall_score(y_test, ypred_test, average='weighted')
+    train_recall = recall_score(y_train, ypred_train, average='weighted')
+    val_recall = recall_score(y_val, ypred_val, average='weighted')
+    
+    # calculate accuracy    
+    test_accuracy = accuracy_score(y_test, ypred_test, normalize=True)
+    train_accuracy = accuracy_score(y_train, ypred_train, normalize=True)
+    val_accuracy = accuracy_score(y_val, ypred_val, normalize=True)    
+    
+    # append scores/metrics to model_score
+    model_score['accuracy'] = {'train': train_accuracy, 'test': test_accuracy, 'val': val_accuracy}
+    model_score['precision'] = {'train': train_precision, 'test': test_precision, 'val': val_precision}
+    model_score['recall'] = {'train': train_recall, 'test': test_recall, 'val': val_recall}
+    model_score['f1_score']= {'train': train_f1, 'test': test_f1, 'val': val_f1}
+    
+    # save model_class name
+    model_score["Model_Class"] = str(trained_model.__class__.__name__)
 
     return model_score
 
-def tune_classification_model_hyperparameters(model_class: abc.ABCMeta, hyper_params: dict, xtrain: pd.core.frame.DataFrame, ytrain: pd.core.series.Series, validation: int=5) -> tuple[abc.ABCMeta, dict, dict]:
-    """This function uses SKLearn's GridSearchCV to perform a grid search over a reasonable range of 
-       hyperparameter values and evaluates the performance using a different metric:-
-       -> f1_score, precision_score, recall_score, accuracy_score
+def tune_classification_model_hyperparameters(model_class: abc.ABCMeta, hyper_params: dict, split_data: tuple, validation: int=5) -> tuple[abc.ABCMeta, dict, dict]:
+    """This function is used to:
+        -> to perform a grid search using SKLearn's GridSearchCV over a reasonable range of hyperparameter values,
+        -> train classification model using best hyper params obtained from GridSearchCV() and
+        -> get best model performance metrics
 
     Args:
         model_class (abc.ABCMeta): the model class to be optimized by cross-validated grid-search over a parameter grid.
         hyper_params (dict): a dictionary of hyperparameter names mapping to a list of values to be tried.
-        xtrain (pd.core.frame.DataFrame): training set.
-        ytrain (pd.core.series.Series): training target set.
+        split_data (tuple): training, validation, and test sets.
         validation (int, optional): Defaults to 5.
 
     Returns:
@@ -252,21 +335,28 @@ def tune_classification_model_hyperparameters(model_class: abc.ABCMeta, hyper_pa
         best_model_param (dict): a dictionary of best hyperparameters on which the model is trained.
         model_score (dict): a dictionary of performance metrics of the model once it is trained and tuned.
     """
+    # unpack split_data
+    x_train, y_train, x_val, y_val, x_test, y_test = split_data
+    
+    #find best parameters using GridSearchCV()
     grid = GridSearchCV(estimator=model_class, param_grid=hyper_params, cv=validation, scoring='accuracy', verbose=1, n_jobs=-1)  
-    grid_result = grid.fit(xtrain, ytrain)
+    grid_result = grid.fit(x_train, y_train)
     best_model_param = grid_result.best_params_
-
+    
+    # get model class and create an instance of model_class
     clf_model = model_class.__class__
     clf_model = clf_model(**best_model_param)
+    
     # train model
-    trained_model = clf_model.fit(xtrain, ytrain)
+    trained_model = clf_model.fit(x_train, y_train)
+    
     # store score in model_score
-    model_score = metrics_trained_model_classifier(trained_model)
+    model_score = classification_trained_model_metrics(trained_model, split_data)
 
     return trained_model, model_score, best_model_param
 
 # Milestone-4, Task-6
-def evaluate_all_models(task_folder: str) -> None:
+def evaluate_all_models(task_folder: str, split_data: tuple) -> None:
     """This function evaluate all the performance of the model(regressor and/or classifier) 
        by using different models provided by sklearn:
        -> SGDRegressor(Linear regressor)
@@ -277,8 +367,8 @@ def evaluate_all_models(task_folder: str) -> None:
        Save the model, hyperparameters, and metrics in a folder named after the model class.
 
     Args:
-        task_folder (str): the name of the parent folder where evaluated regressor and classifier models
-        are saved.
+        task_folder (str): the name of the parent folder where evaluated regressor and classifier models are saved.
+        split_data (tuple): training, validation, and test sets.
     """
     # model_class = SGDRegressor()
     sgd_reg_parameters = {
@@ -315,6 +405,7 @@ def evaluate_all_models(task_folder: str) -> None:
         'min_samples_leaf' : [1, 3, 4], # minimum sample number that can be stored in a leaf node
         'bootstrap'        : [True, False] # method used to sample data points
     }
+    # dictionary of model class and hyperparameters
     regressor_models = {
             'linear_regression' : [SGDRegressor(), sgd_reg_parameters],
             'decision_tree'     : [DecisionTreeRegressor(), decisiontree_reg_parameters],
@@ -367,29 +458,33 @@ def evaluate_all_models(task_folder: str) -> None:
         'oob_score'                : [False],
         'ccp_alpha'                : [0.0]
     }
+    # dictionary of model class and hyperparameters
     classifier_models = {
         'logistic_regression' : [LogisticRegression(), sgd_clf_parameters],
         'decision_tree'       : [DecisionTreeClassifier(), decisiontree_clf_parameters],
         'gradient_boosting'   : [GradientBoostingClassifier(), gradientboosting_clf_parameters],
         'random_forests'      : [RandomForestClassifier(), randomforest_clf_parameters],
     }
-
+    
+    # select regression or classification based on task_folder
     if task_folder == 'models/regression':
         for key in regressor_models:
-            trained_model, model_score, best_model_param = tune_regression_model_hyperparameters(regressor_models[key][0],regressor_models[key][1], xtrain, ytrain, validation=2)
+            trained_model, model_score, best_model_param = tune_regression_model_hyperparameters(regressor_models[key][0],regressor_models[key][1], split_data, validation=2)
             save_model(trained_model, best_model_param, model_score, folder=os.path.join(task_folder,key))
     
     elif task_folder == 'models/classification':
         for key in classifier_models:
-            trained_model, model_score, best_model_param = tune_classification_model_hyperparameters(classifier_models[key][0],classifier_models[key][1], xtrain, ytrain, validation=2)
+            trained_model, model_score, best_model_param = tune_classification_model_hyperparameters(classifier_models[key][0],classifier_models[key][1], split_data, validation=2)
             save_model(trained_model, best_model_param, model_score, folder=os.path.join(task_folder,key))
     else:
         pass
 
     return
+
 # Milestone-4, Task-7
 def find_best_model(task_folder: str) -> tuple[abc.ABCMeta, dict, dict]:
-    """This function evaluates which model is best, then returns:
+    """This function evaluates which model is best based on validation_rmse(for regression)/accuracy(for classification) 
+    & returns:
        -> the loaded model.
        -> a dictionary of its hyperparameters.
        -> a dictionary of its performance metrics.
@@ -402,25 +497,44 @@ def find_best_model(task_folder: str) -> tuple[abc.ABCMeta, dict, dict]:
         performance_metrics (dict): return a dictionary of its performance metrics.
         hyperparameters (dict): return a dictionary of its hyperparameter values.
     """
-    list_of_json_df = [] # an empty list to store the data frames
+    # an empty list to store the data frames
+    list_of_json_df = [] 
     path_of_the_directory = Path(task_folder)
+    # get data from json files in the 'path_of_the_directory' location
+    # store it in dataframe
+    # ignore .DS Store, *.joblib and 'neural_networks' folder
     for filename in os.listdir(path_of_the_directory):
         f = os.path.join(path_of_the_directory,filename)
         if os.path.isfile(f):
             pass
+        elif filename == 'neural_networks':
+            pass
         else:
-            json_path = os.path.join(f,'metrics.json')
+            json_path = os.path.join(f,'metrics.json') 
             with open(json_path) as json_file:
-                data = pd.read_json(json_file) # read data frame from json file
-                data['Path'] = f # append the path to the data frame
-                list_of_json_df.append(data) # append the data frame to the list      
+                # read data frame from json file
+                data = pd.read_json(json_file) 
+                print(data)
+                # append the path to the data frame
+                data['Path'] = f
+                # append the data frame to the list
+                list_of_json_df.append(data)       
     # concatenate all the data frames in the list.
-    df_of_reg_metrics = pd.concat(list_of_json_df, ignore_index=True) 
+    df_metrics = pd.concat(list_of_json_df, ignore_index=True)
+    print(df_metrics)
     # Select the path of the directory for the model with best metrics
-    if str(path_of_the_directory) == 'models/regression':
-        best_model_path = df_of_reg_metrics[df_of_reg_metrics.validation_RMSE==df_of_reg_metrics.validation_RMSE.min()].Path.values[0]
-    elif str(path_of_the_directory) == 'models/classification':
-        best_model_path = df_of_reg_metrics[df_of_reg_metrics.validation_accuracy==df_of_reg_metrics.validation_accuracy.min()].Path.values[0]
+    # Regression
+    if task_folder == 'models/regression':
+        best_model_path = df_metrics[df_metrics.validation_RMSE==df_metrics.validation_RMSE.min()].Path.values[0]
+    # Classification
+    elif task_folder == 'models/classification':
+        # Get validation accuracy score for each model, which is at every other index+2 starting from 0
+        acc_result = df_metrics.loc[2::2, 'accuracy'].values
+        path_result = df_metrics.loc[2::2, 'Path'].values
+        # Find the index corresponding to max validation score
+        max_index = acc_result.argmax()
+        # Find the path corresponding to max validation score
+        best_model_path = path_result[max_index]
     else:
         pass
     # Load the best model, a dictionary of its hyperparameters
@@ -439,14 +553,54 @@ def find_best_model(task_folder: str) -> tuple[abc.ABCMeta, dict, dict]:
         
     return model, performance_metrics, hyperparameters
 
+
+
 if __name__ == "__main__":
+
+    dataset = pd.read_csv("clean_tabular_data.csv")
+
     # tune, train, save and find best regression model
+    features,label = load_airbnb(dataset, label='Price_Night', numeric=True)
     task_folder='models/regression'
-    evaluate_all_models(task_folder)   
+    split_data = get_split_data(features, label,task_folder='models/regression')
+    evaluate_all_models(task_folder, split_data)
     best_reg_model = find_best_model(task_folder)
     print(best_reg_model)
+    
     # tune, train, save and find best classification model
+    features,label = load_airbnb(dataset, label='Category', numeric=True)
     task_folder='models/classification'
-    evaluate_all_models(task_folder)
+    split_data = get_split_data(features, label,task_folder='models/classification')
+    evaluate_all_models(task_folder, split_data)
     best_clf_model = find_best_model(task_folder)
     print(best_clf_model)
+
+
+
+'''
+    #Custom Tune Regression Model Hyperparameters
+    #Comment out code above to run custom_tune_regression_model_hyperparameters()
+
+    # Milestone-4, Task-3
+    # define hyperparameter values
+    model_class = SGDRegressor
+    loss = ['squared_error', 'huber', 'epsilon_insensitive', 'squared_epsilon_insensitive']
+    penalty = ['l1', 'l2', 'elasticnet', None]
+    alpha = [0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]
+    learning_rate = ['constant', 'optimal', 'invscaling', 'adaptive']
+    epsilon = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    eta0 = [1, 10, 100]
+    max_iter = [0, 0.5, 1, 10, 100, 1000, 5000, 10000]
+
+    hyper_params = dict(loss=loss, penalty=penalty, alpha=alpha, learning_rate=learning_rate, epsilon=epsilon, eta0=eta0)
+
+    dataset = pd.read_csv("clean_tabular_data.csv")
+    features,label = load_airbnb(dataset, label='Category', numeric=True)
+    #Select task based on classification or regression
+    task_folder='models/classification'
+    #task_folder='models/regression'
+    #split_data = get_split_data(features, label,task_folder)
+
+    best_model, best_hyperparameter_values, model_score = custom_tune_regression_model_hyperparameters(model_class,split_data,hyper_params)
+
+'''
