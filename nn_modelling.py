@@ -754,7 +754,7 @@ def generate_nn_configs(task: str) -> list:
     return configs
 
 def find_best_nn(train_dataloader: D.DataLoader, val_dataloader: D.DataLoader, split_data: tuple, task: str):
-    """This function Finds the best neural network model based on the supervised learning task 
+    """This function Finds the best neural network model based on the supervised learning task(regression or classification) 
        and returns the best model with performance metrics.
 
     Args:
