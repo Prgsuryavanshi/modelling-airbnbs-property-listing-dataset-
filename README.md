@@ -31,7 +31,7 @@ Our final task in this milestone is to create a function called load_airbnb(), w
 
 > Created get_split_data(), which is used to split the data i.e 'features' into train+val and test set based on given task i.e(regression/classification).
 
-> Evaluated the regression model performance and which produced a mean squared error of 133.073 on the test dataset.
+> Evaluated the regression model performance and which produced a root mean squared error of 133.073 on the test dataset.
 
 > Created a function called custom_tune_regression_model_hyperparameters(), which performs custom grid search by hyperparameters tuning and calculates MSE, RMSE and MAE of train, test and validation data and return the best model, a dictionary of its best hyperparameter values, and a dictionary of its performance metrics.
 
