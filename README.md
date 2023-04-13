@@ -77,7 +77,7 @@ best_reg_model = find_best_model(task_folder)
 
 > Adapt save_model(), which saves the model in a file called model.joblib (SKLearn regression & classification model), its hyperparameters in a file called hyperparameters.json, its performance metrics in a file called metrics.json once it's trained and tuned. The function take in the name of a folder where these files are saved as a keyword argument "folder".
 
-> To improve the performance of the model by using different models provided by sklearn. For e.g., logistic regression, decision tree, random forest and gradient boosting will use the regression versions of each of these models - LogisticRegression(), DecisionTreeClassifier() and GradientBoostingClassifier(), RandomForestClassifier().
+> To improve the performance of the model by using different models provided by sklearn. For e.g., logistic regression, decision tree, random forest and gradient boosting will use the classification versions of each of these models - LogisticRegression(), DecisionTreeClassifier() and GradientBoostingClassifier(), RandomForestClassifier().
 
 > Apply tune_classification_model_hyperparameters() to each of these models to tune their hyperparameters before evaluating them.
 
